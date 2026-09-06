@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Сад Волшебницы</title>
+<!-- Yandex Games SDK -->
+<script src="https://yandex.ru/games/sdk/v2"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+  html,body { height:100%; font-family:'Segoe UI',Arial,sans-serif; overflow:hidden; }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(160deg,#2b1055,#7597de);
+    color:#fff;
+  }
+  #game {
+    width:min(100vw,460px);
+    padding:14px;
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+  }
+  .topbar {
+    width:100%; display:flex; justify-content:space-between; align-items:center;
+    background:rgba(0,0,0,.25); border-radius:14px; padding:10px 16px;
+    font-size:15px;
+  }
+  .topbar b { font-size:20px; }
+  #board {
+    display:grid; gap:6px;
+    background:rgba(0,0,0,.22); padding:8px; border-radius:16px;
+    touch-action:none;
+  }
+  .cell {
+    width:100%; aspect-ratio:1/1; border-radius:12px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:26px; cursor:pointer;
+    background:rgba(255,255,255,.08);
+    transition:transform .12s, box-shadow .12s;
+  }
+  .cell.sel { box-shadow:0 0 0 3px #ffd54a, 0 0 14px #ffd54a; transform:scale(1.06); }
+  .cell.pop { transform:scale(0); }
+  .msg {
+    min-height:42px; text-align:center; font-size:15px; line-height:1.35;
+    background:rgba(0,0,0,.25); border-radius:12px; padding:8px 12px; width:100%;
+  }
+  .overlay {
+    position:fixed; inset:0; background:rgba(20,8,50,.92);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:18px; text-align:center; padding:24px; z-index:10;
+  }
+  .overlay h1 { font-size:28px; }
+  .overlay p { font-size:16px; line-height:1.5; max-width:340px; opacity:.9; }
+  button.btn {
+    background:linear-gradient(135deg,#ffd54a,#ff9d3c);
+    color:#3a1a00; border:none; border-radius:14px;
+    padding:14px 30px; font-size:18px; font-weight:700; cursor:pointer;
+    box-shadow:0 6px 18px rgba(0,0,0,.35);
+  }
+  button.btn:active { transform:scale(.96); }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div id="game">
+  <div class="topbar">
+    <span>Уровень: <b id="level">1</b></span>
+    <span>Очки: <b id="score">0</b></span>
+    <span>Ходы: <b id="moves">15</b></span>
+  </div>
+  <div class="msg" id="story"></div>
+  <div id="board"></div>
+</div>
+
+<!-- Стартовый экран -->
+<div class="overlay" id="startScreen">
+  <h1>🌙 Сад Волшебницы</h1>
+  <p>Злой туман поглотил волшебный сад Луны. Собирай три и более одинаковых кристалла в ряд, чтобы вернуть краски цветам и рассеять тьму!</p>
+  <button class="btn" id="startBtn">Начать приключение</button>
+</div>
+
+<!-- Экран уровня/финала -->
+<div class="overlay hidden" id="endScreen">
+  <h1 id="endTitle"></h1>
+  <p id="endText"></p>
+  <button class="btn" id="endBtn"></button>
+</div>
+
+<script>
+// ====== Yandex Games SDK ======
+let ysdk = null;
+if (window.YaGames) {
+  YaGames.init().then(sdk => {
+    ysdk = sdk;
+    if (ysdk.features && ysdk.features.LoadingAPI) {
+      ysdk.features.LoadingAPI.ready();
+    }
+  }).catch(()=>{});
+}
+// Показ рекламы между уровнями (не чаще чем требует площадка)
+function showInterstitial(cb){
+  if (ysdk && ysdk.adv) {
+    ysdk.adv.showFullscreenAdv({ callbacks:{ onClose:()=>cb&&cb(), onError:()=>cb&&cb() }});
+  } else { cb&&cb(); }
+}
+
+// ====== Игровая логика ======
+const SIZE = 8;
+const TYPES = ['🌸','⭐','💧','🍃','🔮','🌼'];
+let board = [];
+let selected = null;
+let score = 0, moves = 15, level = 1, target = 400;
+let busy = false;
+
+const boardEl  = document.getElementById('board');
+const scoreEl  = document.getElementById('score');
+const movesEl  = document.getElementById('moves');
+const levelEl  = document.getElementById('level');
+const storyEl  = document.getElementById('story');
+
+const STORY = [
+  'Глава 1. Тьма только коснулась сада — верни свет первым цветам.',
+  'Глава 2. Туман сгущается. Волшебница верит в тебя!',
+  'Глава 3. В глубине сада спит древний источник магии.',
+  'Глава 4. Последний рывок — рассей мрак навсегда!'
+];
+
+function setupLevel(){
+  target = 300 + level * 150;
+  moves = 12 + level * 2;
+  score = 0;
+  storyEl.textContent = (STORY[level-1] || 'Сад расцветает!') + ` Цель: ${target} очков.`;
+  levelEl.textContent = level;
+  updateHUD();
+  createBoard();
+}
+
+function updateHUD(){
+  scoreEl.textContent = score;
+  movesEl.textContent = moves;
+}
+
+function rnd(){ return TYPES[Math.floor(Math.random()*TYPES.length)]; }
+
+function createBoard(){
+  board = [];
+  for(let r=0;r<SIZE;r++){
+    board[r]=[];
+    for(let c=0;c<SIZE;c++){
+      let t;
+      do { t = rnd(); }
+      while(
+        (c>=2 && board[r][c-1]===t && board[r][c-2]===t) ||
+        (r>=2 && board[r-1][c]===t && board[r-2][c]===t)
+      );
+      board[r][c]=t;
+    }
+  }
+  render();
+}
+
+function render(){
+  const cell = Math.min((Math.min(window.innerWidth,460)-44)/SIZE, 48);
+  boardEl.style.gridTemplateColumns = `repeat(${SIZE}, ${cell}px)`;
+  boardEl.innerHTML='';
+  for(let r=0;r<SIZE;r++){
+    for(let c=0;c<SIZE;c++){
+      const d=document.createElement('div');
+      d.className='cell';
+      d.style.fontSize=(cell*0.55)+'px';
+      d.dataset.r=r; d.dataset.c=c;
+      d.textContent=board[r][c];
+      if(selected && selected.r===r && selected.c===c) d.classList.add('sel');
+      d.addEventListener('click',()=>onCell(r,c));
+      boardEl.appendChild(d);
+    }
+  }
+}
+
+function onCell(r,c){
+  if(busy) return;
+  if(!selected){ selected={r,c}; render(); return; }
+  if(selected.r===r && selected.c===c){ selected=null; render(); return; }
+  const adj = Math.abs(selected.r-r)+Math.abs(selected.c-c)===1;
+  if(adj){
+    swap(selected,{r,c});
+    if(findMatches().length===0){
+      swap(selected,{r,c}); // откат
+      selected=null; render();
+    } else {
+      moves--; selected=null;
+      updateHUD();
+      resolve();
+    }
+  } else {
+    selected={r,c}; render();
+  }
+}
+
+function swap(a,b){
+  const t=board[a.r][a.c];
+  board[a.r][a.c]=board[b.r][b.c];
+  board[b.r][b.c]=t;
+}
+
+function findMatches(){
+  const m=[];
+  for(let r=0;r<SIZE;r++)
+    for(let c=0;c<SIZE-2;c++){
+      const t=board[r][c];
+      if(t && t===board[r][c+1] && t===board[r][c+2]){
+        m.push([r,c],[r,c+1],[r,c+2]);
+      }
+    }
+  for(let c=0;c<SIZE;c++)
+    for(let r=0;r<SIZE-2;r++){
+      const t=board[r][c];
+      if(t && t===board[r+1][c] && t===board[r+2][c]){
+        m.push([r,c],[r+1,c],[r+2,c]);
+      }
+    }
+  return m;
+}
+
+function resolve(){
+  busy=true;
+  const matches=findMatches();
+  if(matches.length===0){
+    busy=false; render();
+    checkState();
+    return;
+  }
+  const uniq=new Set(matches.map(([r,c])=>r+'_'+c));
+  score += uniq.size*10;
+  updateHUD();
+  render();
+  document.querySelectorAll('.cell').forEach(el=>{
+    const key=el.dataset.r+'_'+el.dataset.c;
+    if(uniq.has(key)) el.classList.add('pop');
+  });
+  setTimeout(()=>{
+    uniq.forEach(k=>{ const [r,c]=k.split('_').map(Number); board[r][c]=null; });
+    collapse();
+    render();
+    setTimeout(resolve,120);
+  },140);
+}
+
+function collapse(){
+  for(let c=0;c<SIZE;c++){
+    let stack=[];
+    for(let r=SIZE-1;r>=0;r--) if(board[r][c]) stack.push(board[r][c]);
+    for(let r=SIZE-1;r>=0;r--) board[r][c] = stack.shift() || rnd();
+  }
+}
+
+function checkState(){
+  if(score>=target){
+    winLevel();
+  } else if(moves<=0){
+    gameOver();
+  }
+}
+
+function winLevel(){
+  if(level>=4){
+    showEnd('🌈 Победа!','Сад Луны снова цветёт, а тьма развеяна навсегда. Волшебница благодарит тебя, герой!','Играть заново', ()=>{ level=1; setupLevel(); });
+  } else {
+    showEnd('✨ Уровень пройден!','Свет возвращается в сад. Впереди новые испытания!','Дальше', ()=>{
+      showInterstitial(()=>{ level++; setupLevel(); });
+    });
+  }
+}
+
+function gameOver(){
+  showEnd('🥀 Ходы закончились','Туман оказался сильнее в этот раз. Попробуй ещё — сад ждёт своего героя!','Попробовать снова', ()=>{ setupLevel(); });
+}
+
+// ====== Экраны ======
+const startScreen=document.getElementById('startScreen');
+const endScreen=document.getElementById('endScreen');
+
+function showEnd(title,text,btn,cb){
+  document.getElementById('endTitle').textContent=title;
+  document.getElementById('endText').textContent=text;
+  const b=document.getElementById('endBtn');
+  b.textContent=btn;
+  b.onclick=()=>{ endScreen.classList.add('hidden'); cb(); };
+  endScreen.classList.remove('hidden');
+}
+
+document.getElementById('startBtn').onclick=()=>{
+  startScreen.classList.add('hidden');
+  setupLevel();
+};
+
+window.addEventListener('resize',()=>{ if(board.length) render(); });
+</script>
+</body>
+</html>
